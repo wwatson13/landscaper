@@ -17,10 +17,8 @@ import (
 
 	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/yaml"
@@ -84,11 +82,16 @@ func (e *Environment) Stop() error {
 
 // InitState creates a new isolated environment with its own namespace.
 func (e *Environment) InitState(ctx context.Context) (*State, error) {
+	return InitStateWithNamespace(ctx, e.Client)
+}
+
+// InitState creates a new isolated environment with its own namespace.
+func InitStateWithNamespace(ctx context.Context, c client.Client) (*State, error) {
 	state := NewState()
 	// create a new testing namespace
 	ns := &corev1.Namespace{}
 	ns.GenerateName = "unit-tests-"
-	if err := e.Client.Create(ctx, ns); err != nil {
+	if err := c.Create(ctx, ns); err != nil {
 		return nil, err
 	}
 	state.Namespace = ns.Name
@@ -103,132 +106,20 @@ func (e *Environment) InitResources(ctx context.Context, resourcesPath string) (
 		return nil, err
 	}
 
-	// parse state and create resources in cluster
-	resources, err := parseResources(resourcesPath, state)
-	if err != nil {
+	if err := state.InitResources(ctx, e.Client, resourcesPath); err != nil {
 		return nil, err
 	}
-
-	for _, obj := range resources {
-		if err := e.Client.Create(ctx, obj); err != nil {
-			return nil, err
-		}
-		if err := e.Client.Status().Update(ctx, obj); err != nil {
-			if apierrors.IsNotFound(err) {
-				continue
-			}
-			return nil, err
-		}
-	}
-
-	return state, nil
+	return state, err
 }
 
 // CleanupState cleans up a test environment.
 // todo: remove finalizers of all objects in state
 func (e *Environment) CleanupState(ctx context.Context, state *State) error {
-	for _, obj := range state.DeployItems {
-		if err := e.Client.Get(ctx, client.ObjectKey{Name: obj.Name, Namespace: obj.Namespace}, obj); err != nil {
-			if apierrors.IsNotFound(err) {
-				continue
-			}
-			return err
-		}
-		if err := e.removeFinalizer(ctx, obj); err != nil {
-			return err
-		}
-		if err := e.Client.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
-			return err
-		}
-	}
-	for _, obj := range state.Executions {
-		if err := e.Client.Get(ctx, client.ObjectKey{Name: obj.Name, Namespace: obj.Namespace}, obj); err != nil {
-			if apierrors.IsNotFound(err) {
-				continue
-			}
-			return err
-		}
-		if err := e.removeFinalizer(ctx, obj); err != nil {
-			return err
-		}
-		if err := e.Client.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
-			return err
-		}
-	}
-	for _, obj := range state.Installations {
-		if err := e.Client.Get(ctx, client.ObjectKey{Name: obj.Name, Namespace: obj.Namespace}, obj); err != nil {
-			if apierrors.IsNotFound(err) {
-				continue
-			}
-			return err
-		}
-		if err := e.removeFinalizer(ctx, obj); err != nil {
-			return err
-		}
-		if err := e.Client.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
-			return err
-		}
-	}
-	for _, obj := range state.Secrets {
-		if err := e.Client.Get(ctx, client.ObjectKey{Name: obj.Name, Namespace: obj.Namespace}, obj); err != nil {
-			if apierrors.IsNotFound(err) {
-				continue
-			}
-			return err
-		}
-		if err := e.removeFinalizer(ctx, obj); err != nil {
-			return err
-		}
-		if err := e.Client.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
-			return err
-		}
-	}
-	for _, obj := range state.ConfigMaps {
-		if err := e.Client.Get(ctx, client.ObjectKey{Name: obj.Name, Namespace: obj.Namespace}, obj); err != nil {
-			if apierrors.IsNotFound(err) {
-				continue
-			}
-			return err
-		}
-		if err := e.removeFinalizer(ctx, obj); err != nil {
-			return err
-		}
-		if err := e.Client.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
-			return err
-		}
-	}
-
-	for _, obj := range state.Generic {
-		if err := e.Client.Get(ctx, client.ObjectKey{Name: obj.GetName(), Namespace: obj.GetNamespace()}, obj); err != nil {
-			if apierrors.IsNotFound(err) {
-				continue
-			}
-			return err
-		}
-		if err := e.removeFinalizer(ctx, obj); err != nil {
-			return err
-		}
-		if err := e.Client.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
-			return err
-		}
-	}
-
-	ns := &corev1.Namespace{}
-	ns.Name = state.Namespace
-	return e.Client.Delete(ctx, ns)
+	return state.CleanupState(ctx, e.Client)
 }
 
-func (e *Environment) removeFinalizer(ctx context.Context, object metav1.Object) error {
-	if len(object.GetFinalizers()) == 0 {
-		return nil
-	}
-
-	object.SetFinalizers([]string{})
-	return e.Client.Update(ctx, object.(runtime.Object))
-}
-
-func parseResources(path string, state *State) ([]runtime.Object, error) {
-	objects := make([]runtime.Object, 0)
+func parseResources(path string, state *State) ([]Object, error) {
+	objects := make([]Object, 0)
 	err := filepath.Walk(path, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -279,7 +170,7 @@ func parseResources(path string, state *State) ([]runtime.Object, error) {
 	return objects, nil
 }
 
-func decodeAndAppendLSObject(data []byte, objects []runtime.Object, state *State) ([]runtime.Object, error) {
+func decodeAndAppendLSObject(data []byte, objects []Object, state *State) ([]Object, error) {
 	decoder := serializer.NewCodecFactory(kubernetes.LandscaperScheme).UniversalDecoder()
 
 	_, gvk, err := decoder.Decode(data, nil, &unstructured.Unstructured{})

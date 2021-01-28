@@ -25,7 +25,7 @@ import (
 
 // NewFakeClientFromPath reads all landscaper related files from the given path adds them to the controller runtime's fake client.
 func NewFakeClientFromPath(path string) (client.Client, *State, error) {
-	objects := make([]runtime.Object, 0)
+	objects := make([]Object, 0)
 	state := &State{
 		Installations: make(map[string]*lsv1alpha1.Installation),
 		Executions:    make(map[string]*lsv1alpha1.Execution),
@@ -69,7 +69,11 @@ func NewFakeClientFromPath(path string) (client.Client, *State, error) {
 		return nil, nil, err
 	}
 
-	return fake.NewFakeClientWithScheme(kubernetes.LandscaperScheme, objects...), state, nil
+	runtimeObjects := make([]runtime.Object, len(objects))
+	for i, obj := range objects {
+		runtimeObjects[i] = obj
+	}
+	return fake.NewFakeClientWithScheme(kubernetes.LandscaperScheme, runtimeObjects...), state, nil
 }
 
 // RegisterFakeClientToMock adds fake client calls to a mockclient
