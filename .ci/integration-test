@@ -1,0 +1,24 @@
+#!/bin/sh
+
+# SPDX-FileCopyrightText: 2020 SAP SE or an SAP affiliate company and Gardener contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+set -o errexit
+set -o nounset
+set -o pipefail
+
+SOURCE_PATH="$(dirname $0)/.."
+
+apk update
+apk add curl
+
+echo "> Installing Kind"
+curl -Lso ./kind https://kind.sigs.k8s.io/dl/v0.7.0/kind-$(uname)-amd64
+chmod +x ./kind
+mv ./kind /usr/bin/
+
+
+kind create cluster
+kubectl cluster-info
+kubectl get nodes
